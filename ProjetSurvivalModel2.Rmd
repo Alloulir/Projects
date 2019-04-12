@@ -1,0 +1,421 @@
+---
+title: "Analyse des données BMT et WPBC"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  html_notebook: default
+---
+L'objectif de l'étude ci-dessous est d'une part d'analyser les données "bmt" dans le cadre d'un modèle de survie avec des variables dépendantes du temps et d'autres part comparer, sur un même jeux de données, les résultats de deux méthodes de régression : Regression logistique et les modèles de survie.
+
+# Modèle de survie avec données dépendantes du temps - Application au jeux de données "bmt"
+
+## Import des libraries 
+
+```{r}
+library(survival)
+library(MASS)
+library(asaur)
+library(KMsurv)
+library(tidyverse)
+
+
+```
+
+
+
+
+## Question 1
+
+### Import des données de l'étude
+
+```{r}
+data("bmt")
+names(bmt)
+head(bmt)
+
+bmt2 <- bmt
+# rm(bmt)
+attach(bmt2)
+```
+
+
+### Codage et transformation des variables
+
+```{r}
+names(bmt2) = c("group", "t1",    "DFS",    "d1"  , "d2",  "DFSstatus" ,  "ta"  ,  "da" ,   "tc"   , "dc" ,   "tp" ,   "dp" ,   "agep" ,   "aged"  ,  "genderp"  ,  "genderd",    "cmvp"  ,  "cmvd"  ,  "waiting"  ,  "FAB" ,   "hospital" ,   "MTW"  )
+glimpse(bmt2)
+
+bmt2$group = recode(bmt2$group, "1"="ALL","2"="Low","3"="High")
+```
+
+
+### Translatation les âges agep et aged de −28.
+
+Le code ci-dessous permet de retyper la variable hopital et de filter les données pour la suite de l'analyse nécessaire à l'analyse.
+
+```{r}
+bmt2$hospital <- as.factor(bmt2$hospital)
+
+bmt2$agep <- bmt2$agep - 28 ## 28 correspond à la mediane
+bmt2$aged <- bmt2$aged - 28 ## 28 correspond à la mediane
+glimpse(bmt2)
+
+# retrait des variables t1,d1,d2,ta,da,tc,dc
+#bm2 <- bmt2[,-c(t1,d1,d2,ta,da,tc,dc)]
+bm2 <- bmt2 %>%  select(-c(t1,d1,d2,ta,da,tc,dc))
+glimpse(bm2)
+bm2$id <- c(1:nrow(bm2))
+```
+
+
+## Question 2 
+Analyse des individus 1 et 14.
+
+```{r}
+bm2[c(1,14),]
+```
+
+
+Pour le patient n°1, le temps de suivi (DFS) est de 2081.
+Au bout du 13j premiers jours sur les 2081j de suivi, le "dp des plaquettes"redevient normal.
+
+Le patient n°14 a été suivi 1167j, il n y a pas eu de retur à la normale des plaquette. Autrement dit, l'étude est finie au bout de 1167j sans que l'on en sache la raison (déménagement ..etc)
+
+
+### Transformation du jeu de donnés au format start-stop
+
+L'indicateur dp est bien une variable dépendante du temps. On voit bien dans le schéma ci-dessous qu'une modélisation classique de survie ne permet pas de se projecter dans le futur.
+
+```{r}
+#autoplot(survfit(Surv(DFS,DFSstatus) ~ dp , data = bm2))
+```
+
+Nous allons donc transformer notre jeux de données au format start-stop-end.
+
+
+```{r}
+bm2_merge <- tmerge(bm2,bm2,id=id,endpt = event(DFS,DFSstatus))
+
+bm2_merge <- tmerge(bm2_merge,bm2,id=id,p_recovery=tdc(tp)) #adds platelet recovery as tdc (time definite covariable)
+#bmt2_merge)
+bm2_merge[bm2_merge$id == 15,]
+```
+
+La transformation est bien effective sur le patient n°15.
+
+## Construction d’un modèle de Cox
+
+
+
+
+```{r}
+model_time <- coxph(Surv(tstart,tstop,endpt)~group+agep+aged+genderp+genderd+cmvp+cmvd+
+        waiting+FAB+hospital,data=bm2_merge)
+```
+
+
+### Selection du modèle avec la fonction stepAIC
+
+```{r}
+
+aic_model_time <-  stepAIC(model_time)
+summary(aic_model_time)
+```
+
+Les variables les plus significatifs sont donc :
+- Group
+- Hospital
+- agep
+- FAB
+
+
+
+
+
+########   Analyse de jeu de données wpbc    ##############
+# Modèle de survie Vs  Réfgression logistique  - Application au jeux de données "wpbc"
+L'ojectif de l'analyse ci-dessous est de comparer les performances d'un modèle de régression logistique par rapport à celle d'un modèle de survie.
+
+## Import des données de l'étude
+
+```{r}
+data("wpbc", package = "TH.data")
+names(wpbc)
+head(wpbc)
+dim(wpbc)
+wpbc2 <- wpbc
+# rm(bmt)
+attach(wpbc2)
+
+str(wpbc2)
+
+```
+
+## Analyse et imputation des valeurs manquantes
+
+```{r}
+any(is.na(wpbc2))
+colSums(is.na(wpbc2))
+```
+
+Il y a 4 individus dont l'attribut "pnodes" est manquant.
+Pour avoir un jeu de données complet pour la suite de l'étude, nous proposons de faire une imputation KNN.
+
+### Imputation KNN
+
+```{r}
+require(DMwR)
+wpbc_final <- knnImputation(wpbc2)
+
+#cat.var = 33, to.impute = 1:nrow(data),using = 1:nrow(data)
+```
+
+```{r}
+anyNA(wpbc_final)
+
+str(wpbc_final)
+```
+
+Le jeu de données ne contient désormais pas de valeurs manquantes.
+
+
+
+## Transformation du jeux de données
+Pour pouvoir comparer les résultat d'une régression logistique à ceux d'une analyse de survie, il est nécessaire de définir une borne de comparaison.
+Dans l'étude ci-dessous, la borne de comparaison est la survie ou non à 24 mois.
+Trois variables "relapse", "ttr" et "flag" seront calculées et rajoutées au jeu de données pour identifier :
+- Les individus censurés avant 24 mois. Ces individus ne seront pas utilisés dans le cadre de la régression logistique
+- Les individus ayant une récurence avant 24 mois
+- Les individus ayant eu une récurrence ou pas après 24 mois.
+
+
+
+```{r}
+wpbc_final[(wpbc_final$time > 24),'relapse'] = 0
+wpbc_final[(wpbc_final$time > 24) ,'ttr'] = 24
+wpbc_final[(wpbc_final$time > 24) ,'flag'] = 'ALL'
+
+
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'R'),'ttr']  = wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'R'),'time']
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'R'),'relapse'] = 1
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'R') ,'flag'] = 'ALL'
+
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'N'),'ttr']  = wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'N'),'time']
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'N'),'relapse'] = 0
+wpbc_final[(wpbc_final$time <= 24) & (wpbc_final$status == 'N') ,'flag'] = 'COX'
+
+str(wpbc_final)
+summary(wpbc_final)
+anyNA(wpbc_final)
+
+any(is.na(wpbc_final))
+colSums(is.na(wpbc_final))
+
+#names(wpbc_final)
+col_names <- c("mean_radius","mean_texture","mean_perimeter","mean_area", "mean_smoothness","mean_compactness","mean_concavity", "mean_concavepoints","mean_symmetry","mean_fractaldim",
+         "SE_radius", "SE_texture", "SE_perimeter", "SE_area", "SE_smoothness","SE_compactness","SE_concavity",   "SE_concavepoints", "SE_symmetry", "SE_fractaldim", "worst_radius", "worst_texture",
+         "worst_perimeter","worst_area","worst_smoothness","worst_compactness",
+         "worst_concavity","worst_concavepoints", "worst_symmetry","worst_fractaldim",
+         "tsize","pnodes" )
+```
+
+## Régression logistique 
+
+Pour la régression logistique, les observations censurées avant 24 mois ne peuvent pas être utilisées.
+En effet, le statut de ces individus à 24 mois est inconnu.
+
+
+```{r}
+
+wpbc_reg <- wpbc_final[wpbc_final['flag'] == "ALL",c(col_names,"relapse")]
+str(wpbc_reg)
+any(is.na(wpbc_reg))
+colSums(is.na(wpbc_reg))
+```
+
+### Analyse des corrélations entre variables quantitatives
+
+```{r warning = FALSE, message = FALSE}
+#install.packages("corrplot")
+library("corrplot")
+mcor <- cor(wpbc_reg)
+corrplot(mcor,type="upper", order="hclust", tl.col="black", tl.srt=45)
+```
+
+On constate une forte corrélation entre les variables mean_radius, mean_perimeter, worst_radius et worst_perimeter.
+
+### Modélisation logistique
+
+#### Split des données
+Nous commençons par diviser le jeu de données en des données d'apprentissage (train) et ceux du test (test).
+
+```{r}
+library("caTools")
+split <- sample.split(wpbc_reg$relapse, SplitRatio = 0.8)
+train <- subset(wpbc_reg, split == T)
+test <- subset(wpbc_reg, split == F)
+
+```
+
+#### Modèlisation 
+
+```{r}
+library("MASS")
+model_logit <- glm(relapse ~ ., data = train,family = binomial(link='logit'))
+mod_logit_aic <- stepAIC(model_logit)
+
+summary(mod_logit_aic)
+```
+
+
+Ci-dessous le module optimal au obtenu par optimisation du critère AIC.
+Calculons l'accuracy et l'AUC de ce modèle.
+
+
+#### Calcul des performances du modèle
+
+##### Calcul de l'accuracy du modèle
+
+```{r, warning = FALSE, message = TRUE}
+
+
+#pred_logit_train <- predict(mod_logit_aic, train, type="response") > 0.5 # notre prédiction est binaire
+#l_train <- (pred_logit-train[, "relapse"])^2
+
+
+pred_logit <- predict(mod_logit_aic, test, type="response") > 0.5 # notre prédiction est binaire
+
+l1 <- (pred_logit-test[, "relapse"])^2
+print(l1)
+accuracy_logit <- (1 - mean(l1))*100
+#print(accuracy_logit)
+
+#l1_train <- (pred_logit-train[, "relapse"])^2
+#print(l1_train)
+#accuracy_logit_train <- (1 - mean(l1_train))*100
+#print(accuracy_logit_train)
+
+#str(pred_logit)
+
+#str(test)
+#print(mean(l1))
+#print(mean(l2))
+
+paste("le taux d'accuracy du modèle logit est de :", as.character(accuracy_logit), "%")
+
+```
+
+##### Calcul de l'AUC du modèle
+
+```{r}
+library(data.table)
+library(mltools)
+#print(auc_roc(pred_logit, test[, "relapse"]))
+
+paste("le taux AUC du modèle logit est de :", as.character(auc_roc(pred_logit, test[, "relapse"]), "%"))
+##print(test[, "relapse"])
+```
+
+
+
+
+### Modélisation de survie avec Cox
+
+Pour le modèle de la survie, l'ensemble des observations, censurées ou pas, seront utilisées dans l'analyse.
+Il s'agit d'un première différence entre les deux modèles. 
+
+```{r}
+
+
+wpbc_cox <- wpbc_final[(wpbc_final['flag'] == "COX") | (wpbc_final['flag'] == "ALL") , c(col_names,"ttr","relapse")]
+#str(wpbc_cox)
+summary(wpbc_cox)
+any(is.na(wpbc_cox))
+colSums(is.na(wpbc_cox))
+```
+
+
+#### Split des données
+Nous commençons par diviser le jeu de données en des données d'apprentissage (train) et ceux du test (test).
+
+```{r}
+library("caTools")
+split <- sample.split(wpbc_cox$relapse, SplitRatio = 0.8)
+train <- subset(wpbc_cox, split == T)
+test <- subset(wpbc_cox, split == F)
+
+
+```
+
+#### Modèlisation 
+
+
+```{r}
+library("MASS")
+model_cox <- coxph(Surv(ttr,relapse) ~ ., data = train,x=TRUE,y=TRUE)
+mod_cox_aic <- stepAIC(model_cox)
+summary(mod_cox_aic)
+
+```
+
+Ci-dessous le module optimal au obtenu par optimisation du critère AIC.
+Nous constatons qu'il y a des différences dans la liste des variables significatives entre les deux modèles(mean_fractalism, worst_fractalism ..etc).
+
+#### Calcul des performances du modèle
+
+##### Calcul de l'accuracy du modèle
+
+
+```{r, warning = FALSE, message = TRUE}
+
+library("pec")
+library("riskRegression")
+
+
+pred_cox <- as.integer((1-predictSurvProb(mod_cox_aic,newdata=test,times = c(24))) > 0.5) # notre prédiction est binaire
+
+l1 <- (pred_cox - test[, "relapse"])^2
+print(l1)
+accuracy_cox <- (1 - mean(l1))*100
+#print(accuracy_cox)
+paste("le taux d'accuracy du modèle cox est de :", as.character(accuracy_cox), "%")
+
+
+
+#pred_cox <- (1-predictSurvProb(mod_cox_aic,newdata=train,times = c(24))) > 0.5 # notre prédiction est binaire
+#l1_train <- (pred_cox - train[, "relapse"])^2
+#print(l1)
+#accuracy_cox <- (1 - mean(l1_train))*100
+#print(accuracy_cox)
+#paste("le taux d'accuracy du modèle cox est de :", as.character(accuracy_cox))
+
+#str(pred_logit)
+
+#str(test)
+#print(mean(l1))
+
+
+```
+LE taux d'accuracy du modèle COX est plus grand que celui du modèle logistique.
+
+##### Calcul de l'AUC du modèle
+
+```{r}
+library(data.table)
+library(mltools)
+
+#print(auc_roc(pred_cox, test[, "relapse"]))
+
+
+paste("le taux AUC du modèle cox est de :", as.character(auc_roc(pred_cox, test[, "relapse"])),"%")
+#print(auc_roc(test[, "relapse"], test[, "relapse"]))
+##print(test[, "relapse"])
+```
+
+Le taux d'AUC du modèle de survie est également supérieur à celle du modèle logistique.
+Nous constatons donc que les performances du modèle de survie sont plus intéressantes (Accuracy, AUC) que celles du modèle logistique.
+En effet, la gestion des observations censurées permet au modèle de survie d'apprendre sur un périmètre plus important de données que celui éligible à la régression logistique.
+
+
+

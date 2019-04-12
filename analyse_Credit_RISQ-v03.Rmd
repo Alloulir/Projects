@@ -1,0 +1,673 @@
+---
+title: "Analyse des données Home Credit"
+output:
+  pdf_document: default
+  html_notebook: default
+  htmltools::HTML(): default
+  html_document:
+    df_print: paged
+---
+
+
+Le fichier "credit_risq.csv" contient les demandes de credit revolving des catégories "Laborers, sales staff et Core Staff".
+Il est le résultat de 1ere partie, sous python, de l'analyse de l'activité de Home Credit.
+L'objectif de cette 2éme partie, sous R, est de :
+    - Faire une étude des données manquantes
+    - Proposer un modèle d'imputation
+    - Et enfin appliquer un modèle de prédiction/classification aux données après imputation.
+    
+
+
+
+```{r}
+#install.packages("naniar")
+
+```
+# Etape 1 : Import des données 
+
+La première étape de cette étude consiste à importer les données dans notre environnement de travail.
+
+```{r}
+rm(list=ls())
+
+library("VIM")
+
+getwd()
+#setwd("C:\\Users\\query\\HCDR\\data")
+
+credit_risq_df = read.csv("./data/credit_risq.csv")
+
+dim(credit_risq_df)
+```
+
+## Analyse des données
+
+```{r}
+summary(credit_risq_df)
+```
+On constate que les colonnes AMT_GOODS_PRICE, EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3, DEF_30_CNT_SOCIAL_CIRCLE, DEF_60_CNT_SOCIAL_CIRCLE, les ratio associ?s.
+BUR_CNT_CRED_PROLONG poss?dent un grand nombre de donn?es manquantes et la plupart des lignes sont renseign?es ? 0.
+
+Nous avons des typologies de donn?es différentes dans le sens o? les variables EXT_SOURCE* repr?sentent des notes comprises en 0 et 1 tandis que d'autres colonnes enregistrent des sommes d'argent empruntéés, des remboursement ou des revenus telles que PAST_AMT_SUM_CREDIT.
+
+Ainsi nous pouvons déjà prévoir de standardiser nos variables afin de ne pas donner une importance artificielle à certaines variables.
+Nous considérerons également que les valeurs NA du champs BUR_CNT_CRED_PROLONG sont en fait des valeurs à 0 cette information étant MNAR.
+```{r}
+credit_risq_df[is.na(credit_risq_df$BUR_CNT_CRED_PROLONG), 'BUR_CNT_CRED_PROLONG'] = 0
+```
+
+
+
+```{r}
+head(credit_risq_df)
+```
+
+```{r}
+dim(credit_risq_df)
+```
+11 189 lignes pour notre jeu de donn?es, malgr? la r?duction ? un p?rim?tre d'?tude d?di?e au demande de "credit revolving" faites par des personnes ?tant employ?es dans des soci?t?s.
+
+```{r}
+# Diff?renciation des variable par leur type
+var_supp_list = c('TARGET','NAME_CONTRACT_TYPE', 'CODE_GENDER', 'FLAG_OWN_REALTY', 'OCCUPATION_TYPE',  'EMPLOYED_BINS')
+
+var_quant_list = c('AMT_INCOME_TOTAL', 'AMT_ANNUITY', 'AMT_GOODS_PRICE', 'AMT_CREDIT', 'CNT_FAM_MEMBERS', 'EXT_SOURCE_1', 'EXT_SOURCE_2','EXT_SOURCE_3', 'DEF_30_CNT_SOCIAL_CIRCLE', 'DEF_60_CNT_SOCIAL_CIRCLE','DEF_30_RATIO', 'DEF_60_RATIO',"PAST_CREDIT_COUNT", "PAST_AMT_SUM_ANNUITY", "PAST_AMT_SUM_CREDIT","PAST_CNT_CONTRACT_ACTIVE", "PAST_CREDIT_REFUSED",'BUR_CNT_CRED_PROLONG')
+
+
+```
+
+# Etape 2 : Echantillonnage des données 
+
+L'objectif de cette étape est de disposer d'un jeu de données avec deux classes (Demandes rejetées Vs demandes acceptées) équilibrées.
+
+Calibrage ?quilibr? de notre ?chantillon, 100 rejets pour 100 accords de cr?dits.
+
+```{r}
+# On ?chantillone nos donn?es pour disposer de deux ensembles de demandes accept?es/rejet?es de m?mes dimensions
+set.seed(123)
+
+
+# Echantillonage des demandes rejet?es
+rejet_dim = 100 
+credit_rejetes = credit_risq_df[credit_risq_df$TARGET==0, ]
+credit_rejets_rand = credit_rejetes[sample(nrow(credit_rejetes), rejet_dim), ]
+
+credit_accordes = credit_risq_df[credit_risq_df$TARGET==1, ]
+credit_accordes_rand = credit_accordes[sample(nrow(credit_accordes), rejet_dim), ]
+
+
+# Reconstitution d'une dataframe ? analyser
+credit_risq_sample = rbind(credit_accordes_rand, credit_rejets_rand)
+credit_risq_sample = credit_risq_sample[sample(nrow(credit_risq_sample), nrow(credit_risq_sample)), ]
+
+dim(credit_risq_sample)
+
+```
+
+```{r}
+write.csv(credit_risq_sample, file = "./save/credit_risq_sample.csv")
+credit_risq_sample = read.csv( "./save/credit_risq_sample.csv")
+
+```
+
+
+# Etape 3 : Analyse fonctionnelle des données manquantes
+
+
+
+```{r}
+# Pr?sentation graphique d'une sommation des valeurs nulles par colonne
+library(naniar)
+gg_miss_var(credit_risq_sample)
+```
+Les deux colonnes ayant le plus grand nombre de donn?es absentes sont les ratios de d?fauts observ?s dans le cercle social du demandeur avec la notation du client EXT_SOURCE_1.
+
+Etant en présence d'une MNAR évidente, on remplace les valeurs nulles des ratio de d?fauts lorsque le nombre de d?faut est lui m?me ?gal ? 0.
+
+Pr?sentation des valeurs nulles par individus
+```{r}
+gg_miss_case(credit_risq_sample[,var_quant_list])
+
+```
+La plupart desindiividus ont entre 0 et 2 donn?es manquantes.
+Plus de 3 donn?es manquantes par individus est un cas marginal.
+
+
+```{r}
+# Si DEF_30_CNT_SOCIAL_CIRCLE = 0 alors DEF_30_RATIO = 0
+attach(credit_risq_sample)
+credit_risq_sample[(is.na(DEF_30_RATIO) &  !is.na(DEF_30_CNT_SOCIAL_CIRCLE) & DEF_30_CNT_SOCIAL_CIRCLE==0), c('DEF_30_RATIO')] = 0
+credit_risq_sample[(is.na(DEF_60_RATIO) &  !is.na(DEF_60_CNT_SOCIAL_CIRCLE) & DEF_60_CNT_SOCIAL_CIRCLE==0), c('DEF_60_RATIO')] = 0
+credit_risq_sample[is.na(DEF_60_CNT_SOCIAL_CIRCLE), c('DEF_60_CNT_SOCIAL_CIRCLE')] = 0
+detach(credit_risq_sample)
+
+
+
+```
+
+## Différentes combinaisons de données manquantes
+
+Pr?sentation du r?sultat
+```{r}
+
+aggr(credit_risq_sample[,var_quant_list])
+?aggr
+```
+La combinaison de colonne la plus fr?quente correspond au ligne compl?tement renseign?e.
+
+Les combinaisons de variables manquantes les plus fr?quentes sont  "EXT_SOURCE_1" seule ou "EXT_SOURCE_3" et "BUR_CNT_CRED_PROLONG" puis vient la combinaison de ces trois variables manquante.
+
+
+
+```{r}
+#names(credit_risq_sample[,var_quant_list][,c(9, 10, 11 ,12)])
+res = summary(aggr(credit_risq_sample[,var_quant_list], sortVar=TRUE, plot=FALSE))$combinations
+head(res[rev(order(res[,2])),])
+
+```
+Les volumes en ligne des 2 combinaisons les plus fr?quentes sont de 70 et 66 occurences.
+
+## Affichage des valeurs manquantes par individus
+
+```{r}
+library(visdat)
+vis_miss(credit_risq_sample[,var_quant_list], cluster = TRUE)
+
+```
+Les donn?es manquantes des variables DEF_* apparaissent comme MNAR.
+Il ne semble pas ?vident de conclure pour les autres variables nous fairons donc l'hypoth?se de MAR.
+
+
+
+
+```{r}
+
+marginplot(credit_risq_sample[,c("EXT_SOURCE_1","EXT_SOURCE_2")])
+
+```
+La colonne EXT_SOURCE_2 n'ayant pas de valeurs nulles nous n'observons qu'une moustache en bas du graphique repr?sentant la distribution de la variable EXT_SOURCE_1 lorsque EXT_SOURCE_2 est pr?sente
+
+A gauche du graphique, on constate que les valeurs de EXT_SOURCE_2 sont l?g?rement plus faible lorsque EXT_SOURCE_1 est absente compar? aux valeurs enregistr?es lorsque EXT_SOURCE_1 est ?gale.
+Cette diff?rence ne permet pas de conclure ? une MAR plut?t qu'? une MCAR.
+
+```{r}
+
+marginplot(credit_risq_sample[,c("EXT_SOURCE_1","EXT_SOURCE_3")])
+
+```
+
+Lorsque EXT_SOURCE_1 manque EXT_SOURCE_3 poss?de une distribution de donn?es sensiblement diff?rente des lignes observ?es en pr?sence de donn?es EXT_SOURCE_1 avec une moyenne envrion 20% plus importante (d'apr?s une lecture du graphique).
+
+Nous concluons l? ? une MAR. 
+
+
+
+
+
+Utilisation de l'Analyse de facteurs multiple pour observer l'association donn?es pr?sentes - donn?es manquantes des variables 
+```{r echo=F}
+library(FactoMineR)
+
+```
+
+```{r}
+cred_risk_quant = credit_risq_sample[,var_quant_list]
+cred_risk_quant_na = data.frame(is.na(cred_risk_quant))
+cred_risk_quant_om = apply(X=cred_risk_quant_na, FUN=function(x) if(x) "m" else "o", MARGIN=c(1,2))
+
+res.mca = MCA(cred_risk_quant_om, graph = F)
+plot(res.mca, invis = "ind", title = "MCA graph of the categories", cex  = 0.5)
+
+```
+On observe 3 ensemble int?ressants :
+- Lorsque le demandeur a eu des prolongation de p?riode pour rembourser son cr?dit, la notation EXT_SOURCE_3 est pr?sente.
+- Les donn?es manquantes de ratio de d?faut sont proches des ?num?rations de d?faut ce qui est une MNAR ?vidente
+- L'absence des notes EXT_SOURCE_3 est proche des absencesde la variable comptabilisant les prolongation de cr?dit. Ceci conforte le constat du premier point et lie fortement ces deux variables. Apparait ?galement l'absence de l'information AMT_GOODS_PRICE.
+
+Nota bene : On note que par d?finition un credit revolving n'est pas attach? ? un support et que le demandeur n'est donc pas tenu de d?clarer le montant d'un bien ? financer.
+
+
+
+
+
+
+## D?finition du nombre de composantes principale
+
+
+```{r}
+# Notre matrice contient des notes, des montant de revenus, de dettes, des ?num?rations. Le rapport entre ces valorisations n'?tant pas pertinent, nous utiliserons un d?composition en composantes principales sur des valeurs standardis?es (comportement par d?faut).  
+
+#cred_risk_quant = cbind(credit_risq_sample$TARGET,credit_risq_sample[,var_quant_list])
+res.pca = PCA(cred_risk_quant, quali.sup = 1, graph=FALSE) # il y a ici une imputation implicite par la moyenne
+
+# Le ratio de kaiser permet de d?finir "un" seuil d'identification des composantes principales ? retenir  
+ratio_kaiser = 100/nrow(cred_risk_quant)
+print("")
+print(paste("ratio_kaiser :", ratio_kaiser))
+res.pca$eig 
+
+```
+Le crit?re de kaiser, reconnu comme trop large, conserverait dans notre cas 14 composantes, soit toutes les composantes dont le pourcentage de variance est sup?rieur ? la moyenne 0.5
+
+```{r}
+
+# Crit?re du coude 
+par(mfrow=c(1,1)) 
+barplot(res.pca$eig[,1],main="Eigenvalues",names.arg=1:nrow(res.pca$eig)) 
+# Un coude se dessine apr?s le premier axe, on voit un second coude moins ?vident apr?s les 5 premi?res composantes
+```
+En tenant compte que cette r?duction de dimension ? appliqu? une imputation par la moyenne desvaleurs manquantes, nous s?lectionnerions les 3 premi?res composantes principale par crit?re du coude.
+
+
+Crit?re de 80% de l'inertie des donn?es
+```{r}
+# Crit?re des 80% de variance conserv?e
+round(res.pca$eig[1:10,],2) 
+# Ce crit?re s?lectionne les 17 premi?re composantes principales
+# Le nombre de composantes dans ce cas est trop important pour esp?rer r?aliser une analyse visuelle 
+```
+Ce crit?re de conservation de l'inertie nous am?nerait ? conserver 7 composantes principales
+
+
+
+## Recherche du nombre de dimension par validation crois?e
+```{r echo=F}
+library(missMDA)
+
+```
+Le package missMDA it?rant les PCA pour imputer les donn?es manquantes, une ?tape pr?alable est r?alis?e afin de d?finir le nombre de dimension de ces PCA. Nous allons utiliser l? cette premi?re ?tape de missMDA pour estimer le nombre de dimensions minimisant l'erreur standard constat?e par validation crois?e.
+
+```{r}
+# D?finition du nombre de composantes par KFold soit une validation crois?e explicite des donn?es manquantes le crit?re de conservtion de la variance r?v?lant 8 composantes comme explicatives de nos donn?es, nous ex?cuterons notre estimateurs pour un maximum de 10 composantes.
+nb = estim_ncpPCA(cred_risk_quant,method.cv = "Kfold", ncp.max=8, verbose = FALSE)
+nb$ncp
+
+```
+3 composantes sont identifi?es comme optimales par comparaison des MSEP (Mean Standard Error of Prediction) obtenues.
+Ceci donne le m?me r?sultat que la m?thode du choix par identification d'un coude.
+```{r}
+
+plot(0:8, nb$criterion, xlab = "nb dim", ylab = "MSEP")
+```
+
+Cette derni?re m?thode d'imputation, moins triviale,  conduit ? une analyse diff?rente des composantes explicatives et souligne donc l'importance du choix de cette m?thode.
+
+
+# Application de l'imputation
+
+```{r}
+res.imp = imputePCA(cred_risk_quant, ncp = nb$ncp)
+
+res.imp_supp = cbind(credit_risq_sample$TARGET, res.imp$completeObs)
+
+res.pca = PCA(res.imp_supp,  quali.sup = 1, ncp = nb$ncp, graph=TRUE)
+
+#plot(res.pca, hab=1, lab="quali",axes=c(1,2));
+```
+On peut observer une masse plus importante de rejet en dessous de l'axe des abcisses.
+
+```{r}
+plot(res.pca, choix="var", axes=c(1, 2))
+```
+Sur la dimension 1 le ratio de d?faut constat? dans le r?seau social du demandeur s'exprime n?gativement sur les p?riode de 30 et 60 jours.
+
+
+SUr ce m?me axe positivement nous observons les variables li?es aux informations pass?es cumul?es entre BUREAU et HOME Credit sur les montants emprunt?s et notamment la variable PAST_CREDIT_COUNT.
+
+On peut observer de fa?on non graphique mais peut-?tre plus clairement ces coefficients de corr?lation.
+
+```{r}
+# Recherche de la corr?lation des variables en fonction de chacun des axes de notre r?duction de dimension
+# Dimension 1
+desc.pca= dimdesc(res.pca, axes=1:nb$ncp)
+desc.pca$Dim.1$quanti
+
+
+```
+
+
+SUr la dimension 2 s'exprime positivement le montant du cr?dit demand? et les remboursements qu'il va engendrer ainsi que le nombre de dossier de demande de cr?dit pass?s.
+N?gativement les d?fauts de cr?dits dans le cercle social du demandeur.
+
+```{r}
+# Dimension 2
+desc.pca$Dim.2$quanti
+
+```
+Le montant des remboursements AMT_ANNUITY s'exprime plus sur l'axe 2 ainsi que toutes les variables li?es au montant de l'emprunt demand?.
+
+```{r}
+desc.pca$Dim.3$quanti
+```
+
+
+```{r}
+plot(res.pca, choix="var", axes=c(1, 3))
+```
+Les donn?es du nombre de cr?dit pass? totaux (PAST_CREDIT_COUNT) et r?fus? dans une moindre mesure s'exprime le plus dans la 3?me dimension.
+
+
+
+
+```{r}
+# Point de reprise : Sauvegarde des objets en m?moire dans un fichier
+save(list=ls(), file="./save/credit_risq_imputed.RData")
+
+
+```
+
+```{r}
+load("./save/credit_risq_imputed.RData")
+
+```
+
+
+
+
+## Recherche d'outliers sur la premi?re dimension 
+```{r}
+# Contribution au dela du premier ecart type
+# contrib > qunatile 68% 
+grands_contributeurs = which(res.pca$ind$contrib[,1] > quantile(res.pca$ind$contrib[,1], probs=c(0.68)))
+
+# Repr?sentation en de?a du premier ecart type
+# Repr?sentation des individus < au quantile 32%
+petit_representants = which(res.pca$ind$cos2[,1] < quantile(res.pca$ind$cos2[,1], probs=c(0.32)))
+
+as.list(grands_contributeurs)[(grands_contributeurs %in% petit_representants)]
+
+  
+
+```
+Aucun individu n'est identifi?.
+
+
+
+# Imputations Multiples
+```{r}
+# Installation et chargement
+#install.packages("Amelia")
+
+```
+
+
+```{r}
+
+# On charge les librairies 
+library(Amelia)
+library(mice)
+library(missMDA)
+
+library(reshape2)
+library(ggplot2)
+
+```
+
+Afin d'?viter des probl?mes d'inversibilit? de notre matrice, nous observons une matrice de corr?lation afin d'?laguer les variables parfiatement lin?aires entre elles.
+```{r}
+
+# Fonction d'affichage de matrice de corr?lation
+get_heatmap <- function(df){
+  
+  # Purge des donn?es manquantes
+  cred_risk_quant = df
+  cormat <- round(cor(na.omit(cred_risk_quant)),2)
+  melted_cormat <- melt(cormat)
+
+  # Affichage de la matrice de corr?lation
+  ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+    geom_tile()
+
+}
+
+get_heatmap(credit_risq_sample[,var_quant_list] )
+
+```
+Les variables suivantes vont ?tre mise de cot? pour notre imputation :
+- AMT_ANNUITY 
+- DEF_30_RATIO 
+- DEF_60_RATIO 
+- PAST_CREDIT_COUNT
+
+
+```{r}
+cred_risk_quant = credit_risq_sample[,var_quant_list]
+cred_risk_quant = cred_risk_quant[,-c(which(names(cred_risk_quant) %in% c('AMT_CREDIT','AMT_ANNUITY',  'DEF_60_RATIO',  'DEF_30_RATIO', 'DEF_30_CNT_SOCIAL_CIRCLE', 'PAST_CREDIT_COUNT', "PAST_AMT_SUM_CREDIT", "PAST_AMT_SUM_ANNUITY")  ))]
+
+get_heatmap(cred_risk_quant )
+
+```
+
+
+
+IMPUTATION MULTIPLE
+
+Les imputations multiples utilis?es sont :
+
+1) Joint Modeling : "Amelia"" utilise un m?me mod?le pour toutes les variables ? imputer 
+
+2) Condional Modeling : "mice" utilise un mod?le de r?gression lin?aire pour chaque variable ? imputer 
+
+3) PCA : "missMDA" r?-it?re les r?ductions par composantes principales jusqu'? ce que l'algorithme converge 
+
+
+
+
+```{r}
+
+
+cred_risk_quant = credit_risq_sample[, c("TARGET","AMT_GOODS_PRICE","CNT_FAM_MEMBERS","EXT_SOURCE_1","EXT_SOURCE_2","EXT_SOURCE_3",  "DEF_60_CNT_SOCIAL_CIRCLE", "PAST_CNT_CONTRACT_ACTIVE","PAST_CREDIT_REFUSED", "AMT_INCOME_TOTAL" )]  
+
+
+nb_datasets = 20
+
+res.amelia <- amelia(cred_risk_quant, m = nb_datasets, p2s=0 )  
+
+imp.mice <- mice(cred_risk_quant, seed=1, m = nb_datasets, defaultMethod = "norm.boot") # the variability of the parameters is obtained 
+res.MIPCA <- MIPCA(cred_risk_quant, ncp = nb$ncp, nboot = nb_datasets) # MI with PCA using 3 dimensions 
+
+
+```
+
+```{r}
+# Point de reprise : Sauvegarde des objets en m?moire dans un fichier
+save(list=ls(), file="./save/credit_risq_multiple_imputed.RData")
+
+
+```
+
+```{r}
+load("./save/credit_risq_multiple_imputed.RData")
+
+```
+
+
+
+# ANALYSE des valeurs imputées
+ Avec AMELIA
+```{r}
+
+compare.density(res.amelia, var = "AMT_GOODS_PRICE")
+
+```
+L'allure est similaire ? l'exception d'un mode sur la courbe imput?es qui laisse entendre qu'il existe une corr?lation des donn?es manquantes ? d'autres variables, nous avons donc l? une MAR
+
+
+```{r}
+
+compare.density(res.amelia, var = "EXT_SOURCE_1")
+
+```
+
+
+```{r}
+compare.density(res.amelia, var = "EXT_SOURCE_3")
+
+```
+
+Si la densit? pour ces deux donn?es de notation imput?es est plus ?troite, la distribution est tout tr?s proche mais cette diff?rence laisse ? penser que les donn?es manquantes ne sont pas totalement li?es au hasard donc non MCAR.
+
+On peut ais?ment imaginer que les variables de notations sont plus fr?quement manquantes pour les "nouveaux" demandeurs de cr?dit. Le premier notebook avait mis en ?vidence une corr?lation entre ces deux variables de notations et les variables Days_registration et days_birth.
+
+
+
+```{r}
+overimpute(res.amelia, var = "AMT_GOODS_PRICE")
+
+```
+
+A l'exception de deux points sur la droite ?loign?s de notre masse de points, la plupart des points sont reconstruits avec un intervalle de confiance de 90% int?grant la valeur d'origine.
+La distance de Cook devrait permettre de classer ces deux points comme valeurs extr?mes, on peut ?galement observer ces valeurs sur une repr?sentation en moustache.
+
+```{r}
+boxplot(cred_risk_quant$AMT_GOODS_PRICE)
+```
+
+
+```{r}
+plot(res.MIPCA,choice= "var")
+```
+
+
+
+L'imputation par it?ration PCA de la variable AMT_GOODS_PRICE est plut?t bonne tandis que des points d'imputation apparaissent tr?s ?loign?s du vecteur repr?sentant la variable BUR_CNT_CRED_PROLONG. 
+Nous expliquons cela par le fait que cette variable semble esseul?e dans son expression sur la dimension 1 de notre r?duction.
+La variable devrait apporter une information importante au mod?le pr?dictif ? construire mais ne dispose pas de variable similaire sur lesquelles s'appuyer pour r?gresser ses donn?es.
+
+```{r}
+```
+
+
+```{r}
+# Point de reprise : Sauvegarde avant r?gression
+save(list=ls(), file="./save/credit_risq_pre_regression.RData")
+
+
+```
+
+```{r}
+load("./save/credit_risq_pre_regression.RData")
+
+```
+
+
+
+# Classification des demandes de cr?dit
+
+## S?lection de variables
+```{r}
+
+# Association de la target ? la dataframe d'entrainement (les valeurs manquantes en moins)
+cred_risk_quant_train = na.omit(cbind( credit_risq_sample$TARGET, cred_risk_quant))
+names(cred_risk_quant_train) = c("TARGET","AMT_GOODS_PRICE","CNT_FAM_MEMBERS","EXT_SOURCE_1","EXT_SOURCE_2","EXT_SOURCE_3",  "DEF_60_CNT_SOCIAL_CIRCLE", "PAST_CNT_CONTRACT_ACTIVE","PAST_CREDIT_REFUSED", "AMT_INCOME_TOTAL" ) 
+
+# Classification par d?faut
+model_sat=glm(TARGET~ ., family=binomial, data=cred_risk_quant_train)
+summary(model_sat)
+
+ 
+```
+
+Nous notons que le mod?le satur? poss?de une AIC ? 81.832
+
+# Construction d'un mod?le par s?lection de variable step-wise
+```{r}
+model0 = glm(TARGET ~ 1, family=binomial, data=cred_risk_quant_train)
+
+model1 = step(model0, scope=list(lower=model0, upper=model_sat), direction="both")
+summary(model1)
+
+
+```
+
+Le mod?le obtenu conserve les notes ext_cource_2 et 3, le montant des revenus du demandeur, le nombre de d?faut dans son r?seau social et enfin le nombre de personne dans son foyer que l'on peut percevoir dans notre cadre comme personnes ? charge.
+
+Pour conclure l'AIC du model1 est meilleur et a ?t? r?duit ? 71.888
+
+```{r}
+#install.packages('leaps')
+
+```
+
+
+```{r}
+
+require(leaps)
+
+# Choix de mod?le (m?thode exhaustive)
+model_rech_exh = regsubsets(TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + AMT_INCOME_TOTAL + DEF_60_CNT_SOCIAL_CIRCLE + CNT_FAM_MEMBERS , int=T, nbest=1, nvmax=10, method="exhaustive", data=cred_risk_quant_train)
+
+resume=summary(model_rech_exh)
+print(resume)
+
+
+
+#plot(model_rech_exh,scale="adjr2")
+plot(model_rech_exh,scale="Cp")
+#plot(model_rech_exh,scale="bic")
+
+```
+
+Le deuxi?me meilleur mod?le selon le crit?re de Mallows conserve le nombre de personnes ? charge et les d?fauts
+
+```{r}
+model2 = glm(TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + AMT_INCOME_TOTAL + CNT_FAM_MEMBERS , family=binomial, data=cred_risk_quant_train)
+summary(model2)
+
+```
+La variable CNT_FAM_memberS ?tant fortement rejet?e par le test de student, nous ne garderons pas cette variable.
+
+
+R?gressions g?n?ralis?es sur l'ensemble des datasets imput?s par chacque m?thode puis pr?diction par aggr?gation sur ces datasets
+
+```{r}
+
+# Construction  de notre mod?le sur chaque ensemble de datasets utilis?s pour chaque m?thode
+resamelia <- lapply(res.amelia$imputations, as.data.frame)
+fitamelia<-lapply(resamelia, glm, formula="TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + AMT_INCOME_TOTAL ", family=binomial) # Aggr?gation pour retenir la moyenne des coefficients estim?s
+poolamelia<-pool(as.mira(fitamelia))
+summary(poolamelia) 
+
+
+
+
+
+```
+```{r}
+# M?me d?marche avec MICE
+lm.mice.out <- with(imp.mice, glm(TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + AMT_INCOME_TOTAL + CNT_FAM_MEMBERS))
+pool.mice <- pool(lm.mice.out)
+summary(pool.mice)
+
+
+
+```
+
+
+
+```{r}
+
+res.MIPCA <- lapply(res.MIPCA$res.MI, as.data.frame)
+fitMIPCA<-lapply(res.MIPCA,glm, formula="TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + AMT_INCOME_TOTAL + CNT_FAM_MEMBERS", family=binomial)
+poolMIPCA<-pool(as.mira(fitMIPCA))
+summary(poolMIPCA)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+TO DO
+
+- comparer la pr?cision des 3 m?thodes sur les pr?dictions par validation crois?e 
+- faire la pr?sentation du notebook R
+
+
+

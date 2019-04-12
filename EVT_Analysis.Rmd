@@ -1,0 +1,268 @@
+---
+title: "EVT Analysis"
+author: "Reda Allouli"
+date: "12/01/2019"
+output: pdf_document
+---
+L'objectif de ce projet est d'étudier, dans le cadre de la théorie des valeurs extrêmes, trois jeux de données 
+   - Marseille : ce fichier contient les précipitations journalières de la période 1864-1991 soit 127 ans.
+   - portpirie : ce jeux de données contient le maximum annuel de la hauteur des vague à Port Pirie en Australie
+   - lisbon : ce jeux de données contient la vitesse maximale annuelle du vent en km/h de la période 1941-1970 à lisbonne.
+
+— Descriptives statistics.
+— Choice of the modelisation : GEV and/or GPD.
+— Choice of the blocks or choice of the threshold.
+— Estimation of the parameters using the MLE and the PWM.
+— Maximum domain of attraction.
+— Return level plot and interpretation.
+— Estimation of a return level corresponding to a return period of 100 years and 1000 years or estimation of the endpoint.
+— A small conclusion.
+# Import des library
+
+```{r setup, include=FALSE}
+require(evir)
+require(ismev)
+require(fExtremes)
+require(evd)
+```
+
+# Données "marseille.txt"
+
+## Import et retraitement des données 
+
+
+```{r}
+pluies = read.table('marseille.txt')[,1]
+summary(pluies)
+```
+
+La maximum de précipitation observé est 2215.
+Ce jeux de données peut être étudié à la fois par l'approche GEV et l'approche GPD
+
+
+## Approche GEV
+Dans le cadre de cette approche, il faut extraire les maxima annuels et faire une analyse GEV sur ces données.
+
+```{r}
+pluies.ts = ts(pluies,start=c(1864,213),frequency=365) # 213: 1 aout 1864
+plot(pluies.ts,main='Pluies maximales journalieres Marseille')
+matPluies = matrix(pluies,365,127) # decoupage en annees aout-juillet
+maxPluies = apply(matPluies,2,max,na.rm = TRUE)
+vecAn = 1864:1990
+```
+
+```{r}
+summary(matPluies)
+```
+
+maxPluies contient le maximum annuel.
+Appliquons la distribution GEV à ce jeux de données :
+
+```{r}
+fitmlemaxPluies <- gevFit(maxPluies, type = "mle",block=1)
+summary(fitmlemaxPluies)
+
+
+```
+
+
+xi > 0 donc le modèle correspond à un modèle de Fréchet. Dans ce cas la queue de distribution est plus lourde. On s'attend donc à voir pluies fortes.
+
+```{r}
+#gev.fit(maxPluies)
+summary(gev.fit(maxPluies))
+gev.diag(gev.fit(maxPluies))
+
+gpd.diag(gpd.fit(maxPluies,0))
+```
+
+Au vu du quantile et probability plots, le mdoèle s'adapte bien aux données (fit).
+L'intervalle de confiance ne s'écarte pas trop des prévisions dans le return plot.
+
+
+```{r}
+fitmlemaxPluies_pwm <- gevFit(maxPluies, type = "pwm",block=1)
+summary(fitmlemaxPluies_pwm)
+
+```
+
+L'estimation par PWM confirme l'analyse précédente et la distribution de Fréchet.
+Les paramétres estimés et leurs variances sont proches de ceux de l'estimation mle.
+Le plot du Q-Q résiduels est  conforme à celui observé auparavant.
+
+### Return level - GEV - à 100 et 1000 ans
+
+```{r}
+# Return level à 100
+
+gevrlevelPlot(fitmlemaxPluies,kBlocks=100)
+```
+
+
+Le return level à 100 ans est de 1609.
+Le jeux de données contient plus de 100 ans de données. Il n'est donc pas étonnant de voir un return level inférieur au maximum observé dans les données.
+
+```{r}
+# Return level à 1000
+
+gevrlevelPlot(fitmlemaxPluies,kBlocks=1000)
+```
+Le return level à 1000 ans est de 2418.
+
+## Approche GPD
+Dans le cadre de cette approche, on va utiliser le fichier de données complet et on déduit un seuil au delà duquel les données seront extraits pour l'analyse.
+
+Choix du seuil
+1er méthode graphique pour le choix du seuil :
+
+```{r}
+mrl.plot(pluies)
+```
+
+La figure ci-dessus met en evidence 5 régions linéaires. 
+La prémière région est la plus linéaire( de 0 à 500). Le seuil devrait appartenir à cette région.
+
+Essayons la 2éme méthode liée à la stabilité de l'estimation  : gpd.fitrange
+
+```{r}
+gpd.fitrange(pluies, 10, 600)
+```
+
+Visuellement un seuil à 350 paraît plausible.
+
+```{r}
+PluiesFit = gpd.fit(pluies, 350)
+gpd.diag(PluiesFit)
+
+
+```
+```{r}
+
+fitmlegpdrain = gpdFit(pluies, u = 350, type = 'mle')
+summary(fitmlegpdrain)
+```
+
+Au vu du quantile et probability plots, le modèle s'adapte bien aux données (fit).
+xi > 0 donc le modèle correspond à un modèle de Fréchet. Dans ce cas la queue de distribution est plus lourde. On s'attend donc à voir pluies fortes.
+donc l'approche GPD confirme la distribution de Frechet obtenu par GEV.
+
+## Return level - GPD - à 100 et 1000 ans
+
+```{r}
+gpdRiskMeasures(fitmlegpdrain, p=1-1/(100*365.25))
+```
+Le Return level à 100 ans par GPD est de 1821
+
+
+```{r}
+gpdRiskMeasures(fitmlegpdrain, p=1-1/(1000*365.25))
+```
+
+Le Return level à 100 ans par GPD est de 3042
+
+# Données portpirie
+
+```{r}
+#portpirie = data("portpirie")
+summary(portpirie)
+```
+La maximum des maximums observés est de 4.690.
+Au vu des données (maximum), ce jeux de données sera étudié avec l'approche GEV.
+
+
+```{r}
+fitmleportpirie <- gevFit(portpirie, type = "mle",block=1)
+
+
+summary(fitmleportpirie)
+
+
+```
+
+Le modèle fit bien les données (Q-Q plot).
+Le xi est négatif (-O.05). on en déduit que c'est un modèle de type Weibull qui est adapté aux données. Cependant la variance de xi est grande (0.09). une valeur 0 de xi est probable.
+On va tester un modèle de type Gumbel et vérifié s'il fit bien les données :
+
+```{r}
+gumbelfitmleportpirie <- gumbelFit(portpirie, type = "mle",block=1)
+
+
+summary(gumbelfitmleportpirie)
+```
+
+Le modèle ne fit ps bien les données. En effet le Q-Q plot est loin d'être une droite.
+
+On mantient donc plutôt un modèle de Weibull.
+### Return level - GEV - à 100 et 1000 ans
+
+```{r}
+# Return level à 100
+
+gevrlevelPlot(fitmleportpirie,kBlocks=100)
+```
+
+
+Le Return level à 100 ans est de 4.68. Cette valeur correspond à la valeur maximale de la série.
+
+
+
+```{r}
+# Return level à 1000
+
+gevrlevelPlot(fitmleportpirie,kBlocks=1000)
+```
+
+
+Le Return level à 1000 ans est de 5.03
+
+# Données lisbon
+
+
+
+```{r}
+#lis = data(lisbon)
+summary(lisbon)
+```
+La maximum des maximums observés est de 132
+Au vu des données (maximum), ce jeux de données sera étudié avec l'approche GEV.
+
+
+```{r}
+fitmlelisbon <- gevFit(lisbon, type = "mle",block=1)
+summary(fitmlelisbon)
+```
+
+
+Le modèle ne fit pas très bien les données (Q-Q plot).
+Le xi est négatif (-O.19). on en déduit que c'est un modèle de type Weibull qui est adapté aux données. Cependant la variance de xi est grande (0.12). Mais 0 n'appartient pas à l'intervalle de confiance.
+
+Au vu du nombre d'observations, on va tester plutôt un fit par pwm
+
+
+```{r}
+fitpwmlisbon <- gevFit(lisbon, type = "pwm",block=1)
+summary(fitpwmlisbon)
+```
+Nous obtenons les mêmes valeurs des paramétres et les mêmes variances.
+
+
+### Return level - GEV - à 100 et 1000 ans
+
+```{r}
+# Return level à 100
+
+gevrlevelPlot(fitmlelisbon,kBlocks=100)
+```
+
+
+Le return level à 100 ans est de 134.7. Ce return level est supérieur mais proche du maximum observé.
+
+```{r}
+# Return level à 1000
+
+gevrlevelPlot(fitmlelisbon,kBlocks=1000)
+```
+
+
+Le return level à 1000 ans est de 144.2. Ce return level est supérieur au maximum observé.
+

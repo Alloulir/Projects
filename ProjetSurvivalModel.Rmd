@@ -1,0 +1,110 @@
+---
+title: "Projet modèles de survie - Etude des données pharmacoSmoking == ALLOULI REDA"
+output: pdf_document
+---
+
+Import des library 
+
+```{r}
+library(survival)
+library(MASS)
+library(asaur)
+
+
+```
+
+## Question 1
+
+Import des données de l'étude
+
+```{r}
+data("pharmacoSmoking")
+names(pharmacoSmoking)
+head(pharmacoSmoking)
+```
+
+
+
+Il y a 11 covariables plus l'identifiant du patient.
+
+
+## Question 2
+
+```{r}
+summary(coxph(Surv(ttr,relapse) ~ . - id, data = pharmacoSmoking))
+```
+
+Les seules variables significatives sont le grp1 et employment. Le coefficient de concordance est de 67%
+Les variables age, ageGroup2 et ageGroup4 sont redondantes. En effet, on peut déduire les deux dernières à partir de la première. On peut également déduire la 3 variables à partir de la 2éme.
+Cette redondance est visible dans le résultat de notre modèle avec une ligne NA qui dénote d'une relation linèaire parfaite entre les colonnes. 
+
+La somme de ageGroup41, ageGroup42 et ageGroup43 est égal à la variable ageGroup21.
+La variables ageGroup4 est plus détaillée que la variable ageGroup2. 
+
+On propose de ne garder que la variable ageGroup4 dans notre modèle et on retire également "age" dont l'information reste aussi redondante.
+
+## Question 3
+
+
+
+```{r}
+summary(coxph(Surv(ttr,relapse) ~ grp + ageGroup4 + gender + 
+                race+ employment+ yearsSmoking+levelSmoking+
+                priorAttempts+longestNoSmoke, data = pharmacoSmoking))
+```
+La variable âge est désormais significative pour notre modèle. Le coefficient de concordance est resté presque inchangé 66%.
+Avec un modèle sans les variables age et ageGroup2, le problème de collinéarité disparaît.
+
+## Question 4
+
+Selection de variables significatives pour notre modèle 
+
+
+```{r}
+model <- stepAIC(coxph(Surv(ttr,relapse) ~ grp + ageGroup4 + gender + 
+            race+ employment+ yearsSmoking+levelSmoking+priorAttempts+
+          longestNoSmoke , data = pharmacoSmoking), direction = c("backward"))
+
+
+```
+
+
+```{r}
+model
+```
+
+
+Les variables les plus significatives sont :
+ - le groupe (grp)
+ - les tranches d'âge (ageGroup4)
+ - Le type d'emploi (employment)
+
+## Question 5
+Interprétation des résultats :
+
+Le groupe de patients "patchOnly" a deux fois plus (1.93) de risque de rechute que le groupe de référence (Groupe avec une triple thérapie).
+
+Les patients dont l'âge est entre 50 et 65 ans ont moins de risque de rechute parmi les autres catégories d'âge.
+Les jeunes patients (groupe de référence) sont les plus exposés au risque de rechute que les autres catégories d'âge.
+
+Pour terminer,les patients avec un emploi de type "ft" (Groupe de référence) ont respesctivement deux fois (1.86) et 1.68 fois moins de risque de rechute que les patients un emploi de type "other" et un emploi de type "pt".
+
+On peut confirmer cette interprétation à l'aide de l'estimateur de Kaplan-Meier
+
+```{r}
+survdiff(Surv(ttr,relapse) ~ grp  , data = pharmacoSmoking)
+```
+
+La p-valeur indique que le groupe est effectivement un axe pertinent d'analyse de cette étude.
+
+
+```{r}
+survdiff(Surv(ttr,relapse) ~ ageGroup4  , data = pharmacoSmoking)
+```
+
+Même remarque que précédemment pour l'âge.
+
+```{r}
+survdiff(Surv(ttr,relapse) ~ employment  , data = pharmacoSmoking)
+```
+Cependant la varible "employment" n'est pas pertinente étant prise toute seule pour expliquer le temps jusqu'à la rechute du patient.
